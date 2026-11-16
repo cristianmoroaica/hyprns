@@ -78,10 +78,10 @@ hyprpm reload
 `hyprpm update` rebuilds it after a Hyprland update.
 
 How this was checked: hyprpm 0.56.2 (built from the Hyprland source) ran `update`, `add`
-and `enable` on a clean copy of this directory as a local git repository, and the file
-it built loaded and ran in a nested Hyprland 0.56.2. That ran in a sandbox with a private
-`/var/cache/hyprpm` and a stand-in for `sudo`; an install from a published URL on a
-normal system has not been tried. Loading the 0.56.2 build into a Hyprland 0.56.1 was
+and `enable` on the URL above, and the file it built loaded and ran in a nested Hyprland
+0.56.2. That ran in a sandbox with a private `/var/cache/hyprpm` and a stand-in for
+`sudo`, so hyprpm's own load step could not reach the file and it was loaded by hand; an
+install on a normal system with real `sudo` has not been tried. Loading the 0.56.2 build into a Hyprland 0.56.1 was
 tried too: it is refused with "version mismatch" and Hyprland keeps running.
 
 ## Config
