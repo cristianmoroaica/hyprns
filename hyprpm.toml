@@ -1,0 +1,10 @@
+[repository]
+name = "hyprns"
+authors = ["Cristian Moroaica"]
+commit_pins = []
+
+[hyprns]
+description = "Live Navier–Stokes wallpapers drawn by Hyprland itself"
+authors = ["Cristian Moroaica"]
+output = "hyprns.so"
+build = ["make all"]

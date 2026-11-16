@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hyprflow directions</title>
+<style>
+  :root { --bg:#1b1a21; --card:#232129; --fg:#e2e0f2; --dim:#9a97ab; --accent:#3b7085; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; padding:24px 16px 48px; }
+  h2 { margin:0 0 4px; font-weight:600; }
+  .subtitle { color:var(--dim); margin:0 0 20px; max-width:70ch; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:18px; }
+  .card { background:var(--card); border:2px solid transparent; border-radius:10px; overflow:hidden; cursor:pointer; transition:border-color .12s; }
+  .card:hover { border-color:#3b708566; }
+  .card.selected { border-color:var(--accent); }
+  canvas { display:block; width:100%; aspect-ratio:16/9; background:#000; }
+  .body { padding:12px 14px 14px; }
+  .body h3 { margin:0 0 4px; font-size:16px; display:flex; align-items:center; gap:8px; }
+  .body h3 .tag { font-size:11px; font-weight:500; color:var(--dim); border:1px solid #ffffff22; border-radius:4px; padding:0 6px; }
+  .body p { margin:4px 0; color:#c9c6d8; font-size:14px; }
+  .body p b { color:var(--fg); font-weight:600; }
+  .controls { display:flex; gap:8px; margin-top:8px; }
+  .controls button { background:#ffffff10; color:var(--fg); border:1px solid #ffffff22; border-radius:6px; padding:3px 10px; font:inherit; font-size:13px; cursor:pointer; }
+  .controls button.on { background:var(--accent); border-color:var(--accent); }
+  .err { color:#e88; padding:12px; font-size:13px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h2>B, second round: the living surface of Jupiter</h2>
+<p class="subtitle">The first storms break out after a few seconds; a full storm-and-calm cycle takes about half a minute. The cloud layer is now computed at the full resolution of the canvas. <b>×6</b> fast-forwards.</p>
+
+<div class="cards" data-multiselect>
+  <div class="card" style="grid-column: 1 / -1" data-choice="k1" onclick="toggleSelect(this)">
+    <canvas id="c-k1" width="1600" height="900"></canvas>
+    <div class="body">
+      <h3>B7 · dark, through a camera <span class="tag">storms, then rivers</span></h3>
+      <p>Bands of cloud run east and west past each other, as on Jupiter. Every so often a cluster of storms breaks out along a band edge and tears the bands into swirls.</p>
+      <p>Then the storms die, the jets pull the wreckage out into long flowing rivers, and the bands slowly re-form until the next outbreak. Dark palette in six steps: night steel, near-black, espresso, umber, dim brass, and near-black again for the cores. Then a camera on top: darkened corners, slight colour fringing toward the edges, a cool tint in the shadows, and sensor noise that changes 24 times a second.</p>
+      <div class="controls"><button data-speed>×6</button><button data-restart>restart</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const VS = `#version 300 es
+void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+const HEAD = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+`;
+const LAT = `
+const int CX[9] = int[9](0, 1, 0, -1, 0, 1, -1, -1, 1);
+const int CY[9] = int[9](0, 0, 1, 0, -1, 1, 1, -1, -1);
+const int OPP[9] = int[9](0, 3, 4, 1, 2, 7, 8, 5, 6);
+const float W[9] = float[9](4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.);
+float feq(int q, float rho, vec2 u) { float cu = float(CX[q]) * u.x + float(CY[q]) * u.y; return W[q] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * dot(u, u)); }
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+`;
+const NOISE = `
+float h21(vec2 p) { p = fract(p * vec2(234.34, 435.345)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
+float vnoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y); }
+`;
+const PDELTA = `vec2 pdelta(vec2 a, vec2 b) { vec2 s = vec2(size); vec2 d = a - b; return d - s * floor(d / s + 0.5); }
+`;
+
+const LBM_INIT = HEAD + LAT + `
+uniform ivec2 size; uniform float seed;
+layout(location = 0) out vec4 o0; layout(location = 1) out vec4 o1; layout(location = 2) out vec4 o2;
+void main() { ivec2 c = ivec2(gl_FragCoord.xy);
+  vec2 u = 0.004 * (vec2(hash(vec2(c) + seed), hash(vec2(c) + seed + 17.0)) - 0.5);
+  float f[9]; for (int q = 0; q < 9; q++) f[q] = feq(q, 1.0, u);
+  o0 = vec4(f[0], f[1], f[2], f[3]); o1 = vec4(f[4], f[5], f[6], f[7]); o2 = vec4(f[8], u, 1.0); }`;
+
+function lbmStepSrc(force, walls) {
+  return HEAD + `#define WALLS ${walls ? 1 : 0}\n` + LAT + `
+uniform sampler2D F0; uniform sampler2D F1; uniform sampler2D F2; uniform ivec2 size; uniform float omega;
+layout(location = 0) out vec4 o0; layout(location = 1) out vec4 o1; layout(location = 2) out vec4 o2;
+float fetchQ(int q, ivec2 c) { if (q < 4) return texelFetch(F0, c, 0)[q]; if (q < 8) return texelFetch(F1, c, 0)[q - 4]; return texelFetch(F2, c, 0).x; }
+` + PDELTA + force + `
+void main() { ivec2 c = ivec2(gl_FragCoord.xy); float f[9];
+  for (int q = 0; q < 9; q++) {
+    int sx = (c.x - CX[q] + size.x) % size.x; int sy = c.y - CY[q];
+#if WALLS
+    if (sy < 0 || sy >= size.y) { f[q] = fetchQ(OPP[q], c); continue; }
+#else
+    sy = (sy + size.y) % size.y;
+#endif
+    f[q] = fetchQ(q, ivec2(sx, sy)); }
+  float rho = 0.0; vec2 m = vec2(0.0);
+  for (int q = 0; q < 9; q++) { rho += f[q]; m += f[q] * vec2(float(CX[q]), float(CY[q])); }
+  vec2 u = m / rho; vec2 F = force(c, u);
+  vec2 ueq = u + F / (omega * rho); float s = length(ueq); if (s > 0.2) ueq *= 0.2 / s;
+  for (int q = 0; q < 9; q++) f[q] += omega * (feq(q, rho, ueq) - f[q]);
+  o0 = vec4(f[0], f[1], f[2], f[3]); o1 = vec4(f[4], f[5], f[6], f[7]); o2 = vec4(f[8], u + 0.5 * F / rho, rho); }`;
+}
+
+const ADV_HEAD = HEAD + `
+uniform sampler2D S; uniform sampler2D F2; uniform ivec2 size; out vec4 o;
+vec4 adv(ivec2 c) { vec2 u = texelFetch(F2, c, 0).yz; return texture(S, (vec2(c) + 0.5 - u) / vec2(size)); }
+`;
+
+function mkX(canvas) {
+  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
+  if (!gl) throw new Error("This browser has no WebGL2.");
+  if (!gl.getExtension("EXT_color_buffer_float")) throw new Error("No float render targets (EXT_color_buffer_float).");
+  gl.getExtension("OES_texture_float_linear");
+  const vao = gl.createVertexArray();
+  const readFb = gl.createFramebuffer();
+  function read(t, w, h) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, readFb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0); const px = new Float32Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px); return px;
+  }
+  function compile(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + "\n" + src.split("\n").map((l, i) => (i + 1) + ": " + l).join("\n"));
+    return s;
+  }
+  function prog(fs) {
+    const p = gl.createProgram(); gl.attachShader(p, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const locs = {}; return { p, loc: n => (n in locs ? locs[n] : (locs[n] = gl.getUniformLocation(p, n))) };
+  }
+  function tex(w, h, o = {}) {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); const f = o.filter || gl.NEAREST;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, o.wrapS || gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, o.wrapT || gl.REPEAT);
+    gl.texImage2D(gl.TEXTURE_2D, 0, o.internal || gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, o.data || null); return t;
+  }
+  function fbo(texs) {
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+    gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("framebuffer incomplete");
+    return f;
+  }
+  function run(pr, fb, w, h, set) {
+    gl.useProgram(pr.p); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); let unit = 0;
+    const U = {
+      f: (n, ...v) => gl["uniform" + v.length + "f"](pr.loc(n), ...v),
+      i: (n, ...v) => gl["uniform" + v.length + "i"](pr.loc(n), ...v),
+      v4: (n, arr) => gl.uniform4fv(pr.loc(n), arr),
+      t: (n, t) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(pr.loc(n), unit); unit++; },
+    };
+    set && set(U); gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  function pair(w, h, o) {
+    const mk = () => { const t = tex(w, h, o); return { t, fb: fbo([t]) }; };
+    const P = { a: mk(), b: mk(),
+      run(pr, set) { run(pr, P.b.fb, w, h, set); const x = P.a; P.a = P.b; P.b = x; },
+      load(data) { gl.bindTexture(gl.TEXTURE_2D, P.a.t); gl.texImage2D(gl.TEXTURE_2D, 0, o.internal || gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data); } };
+    return P;
+  }
+  return { gl, prog, tex, fbo, run, pair, read };
+}
+
+// Advected scalar field. With mac, MacCormack (forward, backward, corrected and
+// clamped to the back-traced cell's corners) keeps filaments sharp; post(c, s)
+// adds each sketch's own sources after the transport.
+const SCALAR_HEAD = HEAD + `uniform sampler2D S; uniform sampler2D F2; uniform ivec2 size; out vec4 o;
+` + PDELTA;
+const ADV1 = SCALAR_HEAD + `uniform float dir;
+void main() { ivec2 c = ivec2(gl_FragCoord.xy); vec2 u = texelFetch(F2, c, 0).yz; o = texture(S, (vec2(c) + 0.5 - dir * u) / vec2(size)); }`;
+function mkScalar(X, W, H, o, post, wrapY) {
+  const gl = X.gl, P = X.pair(W, H, o);
+  const mk = () => { const t = X.tex(W, H, o); return { t, fb: X.fbo([t]) }; };
+  const hat = mk(), bar = mk();
+  const pAdv = X.prog(ADV1), pMac = X.prog(SCALAR_HEAD + `uniform sampler2D HAT; uniform sampler2D BAR;
+` + post + `
+ivec2 wc(ivec2 p) { p.x = (p.x % size.x + size.x) % size.x; p.y = ${wrapY ? "(p.y % size.y + size.y) % size.y" : "clamp(p.y, 0, size.y - 1)"}; return p; }
+void main() { ivec2 c = ivec2(gl_FragCoord.xy); vec2 u = texelFetch(F2, c, 0).yz; ivec2 b = ivec2(floor(vec2(c) - u));
+  vec4 a0 = texelFetch(S, wc(b), 0), a1 = texelFetch(S, wc(b + ivec2(1, 0)), 0), a2 = texelFetch(S, wc(b + ivec2(0, 1)), 0), a3 = texelFetch(S, wc(b + ivec2(1, 1)), 0);
+  vec4 v = texelFetch(HAT, c, 0) + 0.5 * (texelFetch(S, c, 0) - texelFetch(BAR, c, 0));
+  v = clamp(v, min(min(a0, a1), min(a2, a3)), max(max(a0, a1), max(a2, a3)));
+  o = post(c, v); }`);
+  return {
+    get t() { return P.a.t; }, load: d => P.load(d),
+    step(F2, set) {
+      X.run(pAdv, hat.fb, W, H, U => { U.t("S", P.a.t); U.t("F2", F2); U.i("size", W, H); U.f("dir", 1); });
+      X.run(pAdv, bar.fb, W, H, U => { U.t("S", hat.t); U.t("F2", F2); U.i("size", W, H); U.f("dir", -1); });
+      P.run(pMac, U => { U.t("S", P.a.t); U.t("HAT", hat.t); U.t("BAR", bar.t); U.t("F2", F2); U.i("size", W, H); set && set(U); });
+    },
+  };
+}
+
+function mkLBM(X, W, H, force, walls, omega) {
+  const gl = X.gl;
+  const mk = () => { const t = [0, 1, 2].map(() => X.tex(W, H)); return { t, fb: X.fbo(t) }; };
+  let a = mk(), b = mk();
+  const pInit = X.prog(LBM_INIT), pStep = X.prog(lbmStepSrc(force, walls));
+  const px = new Float32Array(4);
+  const L = {
+    init() { X.run(pInit, a.fb, W, H, U => { U.i("size", W, H); U.f("seed", Math.random() * 100); }); },
+    step(extra) {
+      X.run(pStep, b.fb, W, H, U => { U.t("F0", a.t[0]); U.t("F1", a.t[1]); U.t("F2", a.t[2]); U.i("size", W, H); U.f("omega", omega); extra && extra(U); });
+      const x = a; a = b; b = x;
+    },
+    get vel() { return a.t[2]; },
+    stats() { const p = X.read(a.t[2], W, H); let um = 0, us = 0, rmin = 9, rmax = 0, bad = 0;
+      for (let i = 0; i < W * H; i++) { const ux = p[i * 4 + 1], uy = p[i * 4 + 2], r = p[i * 4 + 3];
+        if (!Number.isFinite(r)) { bad++; continue; } const s = Math.hypot(ux, uy); um = Math.max(um, s); us += s; rmin = Math.min(rmin, r); rmax = Math.max(rmax, r); }
+      return { umax: +um.toFixed(4), umean: +(us / (W * H)).toFixed(5), rmin: +rmin.toFixed(3), rmax: +rmax.toFixed(3), bad }; },
+    broken() {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, a.fb); gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.readPixels(W >> 1, H >> 1, 1, 1, gl.RGBA, gl.FLOAT, px); return !Number.isFinite(px[3]) || px[3] < 0.5 || px[3] > 1.5;
+    },
+  };
+  L.init(); return L;
+}
+
+const PHI = 0.6180339887, PLASTIC = 0.7548776662;
+let BAND_AMP = 2.8e-6, BAND_OMEGA = 1.95, CONV_GB = 4e-5;
+
+// ---------------------------------------------------------------- A: marbled ink
+function sketchMarble(X) {
+  const gl = X.gl, W = 400, H = 225, DROP_EVERY = 650, DROP_LEN = 60, DROP_R = 22;
+  const lbm = mkLBM(X, W, H, `
+uniform vec4 stir[3]; uniform vec4 drop; uniform float drag;
+vec2 force(ivec2 c, vec2 u) { vec2 p = vec2(c) + 0.5; vec2 F = -drag * u;
+  for (int i = 0; i < 3; i++) { vec2 d = pdelta(p, stir[i].xy); float g = exp(-dot(d, d) / 196.0); F += 0.05 * g * (stir[i].zw - u); }
+  if (drop.w > 0.0) { vec2 d = pdelta(p, drop.xy); float l = length(d) + 1e-3; float g = exp(-pow((l - drop.z) / 5.0, 2.0)); F += drop.w * g * d / l; }
+  return F; }`, false, 1.85);
+  const ink = mkScalar(X, W, H, { filter: gl.LINEAR }, `
+uniform vec4 drop; uniform vec4 inkC; uniform float decay;
+vec4 post(ivec2 c, vec4 s) { s *= decay;
+  if (drop.z > 0.0) { float m = smoothstep(drop.z, drop.z - 2.5, length(pdelta(vec2(c) + 0.5, drop.xy))); s = mix(s, inkC, m); }
+  return s; }`, true);
+  const pShow = X.prog(HEAD + `
+uniform sampler2D S; uniform vec2 view; uniform ivec2 size; out vec4 o;
+float hgt(vec2 q) { return dot(texture(S, q), vec4(1.0)); }
+void main() { vec2 q = gl_FragCoord.xy / view; vec2 t = 1.0 / vec2(size); vec4 s = texture(S, q);
+  vec3 col = vec3(0.075, 0.07, 0.085);
+  col = mix(col, vec3(0.79, 0.50, 0.23), 1.0 - exp(-2.2 * s.r));
+  col = mix(col, vec3(0.23, 0.44, 0.52), 1.0 - exp(-2.2 * s.g));
+  col = mix(col, vec3(0.92, 0.88, 0.80), 1.0 - exp(-2.2 * s.b));
+  col = mix(col, vec3(0.50, 0.15, 0.13), 1.0 - exp(-2.2 * s.a));
+  float hx = hgt(q + vec2(t.x, 0)) - hgt(q - vec2(t.x, 0)), hy = hgt(q + vec2(0, t.y)) - hgt(q - vec2(0, t.y));
+  vec3 n = normalize(vec3(-hx, -hy, 0.6)); vec3 L = normalize(vec3(-0.5, 0.6, 0.7));
+  float sh = 0.75 + 0.35 * dot(n, L); float sp = pow(max(dot(reflect(-L, n), vec3(0, 0, 1)), 0.0), 24.0);
+  o = vec4(col * sh + 0.12 * sp, 1.0); }`);
+  const INKS = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+  const ST = [ // centre, amplitude, angular speeds, phases: speed ratios are irrational
+    { cx: 100, cy: 112, ax: 120, ay: 70, w1: 3.1e-4, w2: 3.1e-4 * 1.6180339887, p1: 0.0, p2: 1.3 },
+    { cx: 300, cy: 112, ax: 110, ay: 80, w1: 2.6e-4 * 1.4142135623, w2: 2.6e-4, p1: 2.1, p2: 0.4 },
+    { cx: 200, cy: 60,  ax: 160, ay: 50, w1: 2.2e-4, w2: 2.2e-4 * 2.2360679775, p1: 4.0, p2: 3.3 },
+  ];
+  let step = 0, k = 0, drop = null;
+  const stir = new Float32Array(12);
+  function reset() {
+    lbm.init(); step = 0; k = 0; drop = null;
+    const d = new Float32Array(W * H * 4);
+    for (let y = 0; y < H; y++) { const band = Math.floor(y / (H / 10)) % 4; const edge = (y % (H / 10)) / (H / 10);
+      for (let x = 0; x < W; x++) d[(y * W + x) * 4 + band] = edge > 0.12 && edge < 0.88 ? 0.9 : 0.0; }
+    ink.load(d);
+  }
+  reset();
+  return { reset, frame(n) {
+    for (let s = 0; s < n; s++, step++) {
+      if (step % DROP_EVERY === 0) { k++; drop = { x: ((k * PHI) % 1) * W, y: ((k * PLASTIC) % 1) * H, age: 0, ink: INKS[k % 4] }; }
+      ST.forEach((q, i) => { const t = step;
+        stir[i * 4] = q.cx + q.ax * Math.sin(q.w1 * t + q.p1); stir[i * 4 + 1] = q.cy + q.ay * Math.sin(q.w2 * t + q.p2);
+        stir[i * 4 + 2] = q.ax * q.w1 * Math.cos(q.w1 * t + q.p1); stir[i * 4 + 3] = q.ay * q.w2 * Math.cos(q.w2 * t + q.p2); });
+      const live = drop && drop.age < DROP_LEN, r = live ? 3 + (DROP_R - 3) * Math.sqrt(drop.age / DROP_LEN) : 0;
+      lbm.step(U => { U.v4("stir", stir); U.f("drop", live ? drop.x : 0, live ? drop.y : 0, r, live ? 0.006 * (1 - drop.age / DROP_LEN) : 0); U.f("drag", 1.5e-4); });
+      ink.step(lbm.vel, U => { U.f("drop", live ? drop.x : 0, live ? drop.y : 0, r, 0);
+        U.f("inkC", ...(live ? drop.ink : [0, 0, 0, 0])); U.f("decay", 0.99996); });
+      if (live) drop.age++;
+    }
+    X.run(pShow, null, gl.canvas.width, gl.canvas.height, U => { U.t("S", ink.t); U.f("view", gl.canvas.width, gl.canvas.height); U.i("size", W, H); });
+  }, lbm, inkStats() { const p = X.read(ink.t, W, H); const s = [0, 0, 0, 0]; for (let i = 0; i < p.length; i++) s[i & 3] += p[i]; return s.map(v => +(v / (W * H)).toFixed(4)); } };
+}
+
+// ---------------------------------------------------------------- B: banded storms (Kolmogorov flow)
+function sketchBands(X) {
+  const gl = X.gl, W = 400, H = 225;
+  const lbm = mkLBM(X, W, H, `
+uniform float amp; uniform float drag; uniform float nband;
+vec2 force(ivec2 c, vec2 u) { float y = (float(c.y) + 0.5) / float(size.y); return vec2(amp * sin(6.2831853 * nband * y), 0.0) - drag * u; }`, false, BAND_OMEGA);
+  const tr = mkScalar(X, W, H, { filter: gl.LINEAR }, `
+uniform float relax;
+vec4 post(ivec2 c, vec4 s) { float y = (float(c.y) + 0.5) / float(size.y) * 6.2831853;
+  s.xy = mix(s.xy, vec2(cos(y), sin(y)), relax); return s; }`, true);
+  const pShow = X.prog(HEAD + `
+uniform sampler2D S; uniform sampler2D F2; uniform vec2 view; uniform ivec2 size; out vec4 o;
+vec3 pal(float t) { t = fract(t) * 5.0; int i = int(t); float f = smoothstep(0.0, 1.0, fract(t));
+  vec3 P[6] = vec3[6](vec3(0.93, 0.87, 0.76), vec3(0.80, 0.62, 0.42), vec3(0.58, 0.31, 0.19), vec3(0.30, 0.20, 0.16), vec3(0.62, 0.64, 0.66), vec3(0.93, 0.87, 0.76));
+  return mix(P[i], P[i + 1], f); }
+void main() { vec2 q = gl_FragCoord.xy / view; vec4 s = texture(S, q);
+  float ph = atan(s.y, s.x) / 6.2831853 + 0.5; float mixd = clamp(length(s.xy), 0.0, 1.0);
+  vec3 col = mix(vec3(0.62, 0.52, 0.42), pal(ph * 3.0), 0.35 + 0.65 * mixd);
+  ivec2 c = ivec2(q * vec2(size)); ivec2 sz = size;
+  float curl = (texelFetch(F2, ivec2((c.x + 1) % sz.x, c.y), 0).z - texelFetch(F2, ivec2((c.x - 1 + sz.x) % sz.x, c.y), 0).z)
+             - (texelFetch(F2, ivec2(c.x, (c.y + 1) % sz.y), 0).y - texelFetch(F2, ivec2(c.x, (c.y - 1 + sz.y) % sz.y), 0).y);
+  col *= 0.82 + 0.25 * tanh(curl * 25.0);
+  o = vec4(col * 0.85, 1.0); }`);
+  let step = 0;
+  function reset() {
+    lbm.init(); step = 0;
+    const d = new Float32Array(W * H * 4);
+    for (let y = 0; y < H; y++) { const a = (y + 0.5) / H * 2 * Math.PI; for (let x = 0; x < W; x++) { d[(y * W + x) * 4] = Math.cos(a); d[(y * W + x) * 4 + 1] = Math.sin(a); } }
+    tr.load(d);
+  }
+  reset();
+  return { reset, frame(n) {
+    for (let s = 0; s < n; s++, step++) {
+      lbm.step(U => { U.f("amp", BAND_AMP); U.f("drag", 1e-5); U.f("nband", 3); });
+      tr.step(lbm.vel, U => U.f("relax", 3e-4));
+    }
+    X.run(pShow, null, gl.canvas.width, gl.canvas.height, U => { U.t("S", tr.t); U.t("F2", lbm.vel); U.f("view", gl.canvas.width, gl.canvas.height); U.i("size", W, H); });
+  }, lbm };
+}
+
+// ---------------------------------------------------------------- C: convection (Rayleigh–Bénard)
+function sketchConvection(X) {
+  const gl = X.gl, W = 400, H = 225;
+  const lbm = mkLBM(X, W, H, `
+uniform sampler2D T; uniform float gb;
+vec2 force(ivec2 c, vec2 u) { return vec2(0.0, gb * (texelFetch(T, c, 0).r - 0.5)); }`, true, 1.887);
+  const temp = mkScalar(X, W, H, { filter: gl.LINEAR, wrapT: gl.CLAMP_TO_EDGE }, `
+uniform float kappa; uniform float tick;
+float hh(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+vec4 post(ivec2 c, vec4 s) {
+  int xl = (c.x - 1 + size.x) % size.x, xr = (c.x + 1) % size.x, yd = max(c.y - 1, 0), yu = min(c.y + 1, size.y - 1);
+  float lap = texelFetch(S, ivec2(xl, c.y), 0).r + texelFetch(S, ivec2(xr, c.y), 0).r + texelFetch(S, ivec2(c.x, yd), 0).r + texelFetch(S, ivec2(c.x, yu), 0).r - 4.0 * texelFetch(S, c, 0).r;
+  float T = s.r + kappa * lap;
+  if (c.y <= 1) T = 1.0 + 0.15 * (hh(vec2(float(c.x / 3), tick)) - 0.5);
+  if (c.y >= size.y - 2) T = 0.0 + 0.15 * (hh(vec2(float(c.x / 3), tick + 7.0)) - 0.5);
+  return vec4(T, 0.0, 0.0, 1.0); }`, false);
+  const pShow = X.prog(HEAD + `
+uniform sampler2D S; uniform vec2 view; uniform ivec2 size; out vec4 o;
+vec3 bb(float t) { t = clamp(t, 0.0, 1.0);
+  vec3 a = vec3(0.035, 0.025, 0.045), b = vec3(0.30, 0.05, 0.04), c = vec3(0.78, 0.30, 0.07), d = vec3(0.96, 0.66, 0.30), e = vec3(1.0, 0.93, 0.78);
+  return t < 0.3 ? mix(a, b, t / 0.3) : t < 0.55 ? mix(b, c, (t - 0.3) / 0.25) : t < 0.8 ? mix(c, d, (t - 0.55) / 0.25) : mix(d, e, (t - 0.8) / 0.2); }
+float tt(vec2 q) { return texture(S, q).r; }
+void main() { vec2 q = gl_FragCoord.xy / view; vec2 t = 1.0 / vec2(size); float T = tt(q);
+  float hx = tt(q + vec2(t.x, 0)) - tt(q - vec2(t.x, 0)), hy = tt(q + vec2(0, t.y)) - tt(q - vec2(0, t.y));
+  vec3 n = normalize(vec3(-hx * 3.0, -hy * 3.0, 1.0)); float sh = 0.8 + 0.3 * dot(n, normalize(vec3(-0.4, 0.7, 0.6)));
+  o = vec4(bb(0.5 + (T - 0.5) * 1.9) * sh, 1.0); }`);
+  let step = 0;
+  function reset() {
+    lbm.init(); step = 0;
+    const d = new Float32Array(W * H * 4);
+    // start from the still, conducting state (a straight temperature ramp) plus noise,
+    // so the whole layer is unstable at once instead of waiting for boundary layers
+    const ph = [3, 4, 5, 6, 7, 9].map(m => [m, Math.random() * 6.283]);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let b = 0; for (const [m, p] of ph) b += Math.sin(6.2831853 * m * x / W + p);
+      d[(y * W + x) * 4] = 1 - y / (H - 1) + 0.05 * b * Math.sin(Math.PI * y / (H - 1)) + 0.04 * (Math.random() - 0.5); }
+    temp.load(d);
+  }
+  reset();
+  return { reset, frame(n) {
+    for (let s = 0; s < n; s++, step++) {
+      lbm.step(U => { U.t("T", temp.t); U.f("gb", CONV_GB); });
+      temp.step(lbm.vel, U => { U.f("kappa", 0.01); U.f("tick", Math.floor(step / 60)); });
+    }
+    X.run(pShow, null, gl.canvas.width, gl.canvas.height, U => { U.t("S", temp.t); U.f("view", gl.canvas.width, gl.canvas.height); U.i("size", W, H); });
+  }, lbm, tStats() { const p = X.read(temp.t, W, H); const rows = [0, 2, 56, 112, 168, 222, 224]; return rows.map(y => { let s = 0; for (let x = 0; x < W; x++) s += p[(y * W + x) * 4]; return +(s / W).toFixed(3); }); } };
+}
+
+// ---------------------------------------------------------------- B round 2: Jupiter
+const FN = `
+float fh(vec2 p) { p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 19.19); return fract(p.x * p.y); }
+float fn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(fh(i), fh(i + vec2(1, 0)), f.x), mix(fh(i + vec2(0, 1)), fh(i + vec2(1, 1)), f.x), f.y); }
+`;
+window.JOVE = { u0: 0.04, relax: 1.5e-3, kick: 6.5e-4, back: 2.5e-4, beta: 4.5e-4 };
+function sketchJove(X) {
+  const gl = X.gl, W = 400, H = 225;
+  const lbm = mkLBM(X, W, H, `
+uniform vec4 st[4]; uniform float u0; uniform float relax; uniform float kick; uniform float beta; uniform vec4 eye;
+vec2 force(ivec2 c, vec2 u) { vec2 p = vec2(c) + 0.5; float y = p.y / float(size.y);
+  float jet = u0 * sin(3.14159265 * 7.0 * y);
+  vec2 F = relax * vec2(jet - u.x, -0.3 * u.y);
+  float f = beta * (p.y - 0.5 * float(size.y)); vec2 dv = u - vec2(jet, 0.0); F += f * vec2(dv.y, -dv.x) - 0.5 * f * f * dv;
+  for (int i = 0; i < 4; i++) { vec2 d = pdelta(p, st[i].xy); float r = st[i].z;
+    if (r > 0.0) F += kick * st[i].w * exp(-dot(d, d) / (2.0 * r * r)) * vec2(-d.y, d.x) / r; }
+  if (eye.w > 0.0) { vec2 d = pdelta(p, eye.xy); vec2 dd = vec2(d.x / 1.5, d.y); float r = eye.z, q2 = dot(dd, dd) / (r * r);
+    vec2 vt = 0.07 * exp(0.5 - 0.5 * q2) * vec2(-dd.y, dd.x / 1.5) / r;
+    F += 4e-3 * eye.w * exp(-q2 / 5.0) * (vt - u); }
+  return F; }`, true, 1.88);
+  const K = 4, DW = W * K, DH = H * K, DO = { filter: gl.LINEAR, wrapT: gl.CLAMP_TO_EDGE };
+  const DHEAD = HEAD + `uniform sampler2D S; uniform sampler2D V; uniform ivec2 size; uniform ivec2 lsize; out vec4 o;
+const float K = ${K}.0;
+vec2 lv(ivec2 b) { return texelFetch(V, ivec2((b.x % lsize.x + lsize.x) % lsize.x, clamp(b.y, 0, lsize.y - 1)), 0).yz; }
+vec2 velAt(vec2 pl) { vec2 g = pl - 0.5; vec2 i = floor(g), f = g - i; ivec2 b = ivec2(i);
+  return mix(mix(lv(b), lv(b + ivec2(1, 0)), f.x), mix(lv(b + ivec2(0, 1)), lv(b + ivec2(1, 1)), f.x), f.y); }
+`;
+  const pAdv = X.prog(DHEAD + `uniform float dir;
+void main() { vec2 c = gl_FragCoord.xy; o = texture(S, (c - dir * K * velAt(c / K)) / vec2(size)); }`);
+  const pMac = X.prog(DHEAD + `uniform sampler2D HAT; uniform sampler2D BAR; uniform vec4 st[4]; uniform vec4 sc; uniform float back; uniform vec4 eye;
+float band(float y) { return 0.5 + 0.36 * sin(3.14159265 * 7.0 * y + 1.5708) + 0.14 * sin(3.14159265 * 17.0 * y + 2.0); }
+float sm(ivec2 p) { return texelFetch(S, ivec2((p.x % size.x + size.x) % size.x, clamp(p.y, 0, size.y - 1)), 0).r; }
+void main() { ivec2 c = ivec2(gl_FragCoord.xy); vec2 cf = gl_FragCoord.xy; vec2 p = cf / K;
+  ivec2 b = ivec2(floor(cf - 0.5 - K * velAt(p)));
+  float a0 = sm(b), a1 = sm(b + ivec2(1, 0)), a2 = sm(b + ivec2(0, 1)), a3 = sm(b + ivec2(1, 1));
+  float v = texelFetch(HAT, c, 0).r + 0.5 * (texelFetch(S, c, 0).r - texelFetch(BAR, c, 0).r);
+  v = clamp(v, min(min(a0, a1), min(a2, a3)), max(max(a0, a1), max(a2, a3)));
+  v = mix(v, band(p.y / float(lsize.y)), back);
+  for (int i = 0; i < 4; i++) { vec2 d = p - st[i].xy; float sx = float(lsize.x); d.x -= sx * floor(d.x / sx + 0.5); float r = st[i].z;
+    if (r > 0.0) v = mix(v, sc[i], 0.004 * abs(st[i].w) * exp(-dot(d, d) / (0.5 * r * r))); }
+  if (eye.w > 0.0) { vec2 d = p - eye.xy; float sx = float(lsize.x); d.x -= sx * floor(d.x / sx + 0.5); d.x /= 1.5; float q2 = dot(d, d) / (eye.z * eye.z);
+    float qq = sqrt(q2); float tg = 0.74 + 0.26 * exp(-q2 * 8.0) - 0.5 * exp(-(qq - 1.3) * (qq - 1.3) * 12.0);
+    v = mix(v, tg, 0.008 * eye.w * exp(-q2 * 0.45)); }
+  o = vec4(clamp(v, 0.0, 1.0), 0.0, 0.0, 1.0); }`);
+  const DP = X.pair(DW, DH, DO), mkT = () => { const tx = X.tex(DW, DH, DO); return { t: tx, fb: X.fbo([tx]) }; }, hat = mkT(), bar = mkT();
+  const dye = { get t() { return DP.a.t; }, load: d => DP.load(d), step(Vt, set) {
+    const base = U => { U.t("V", Vt); U.i("size", DW, DH); U.i("lsize", W, H); };
+    X.run(pAdv, hat.fb, DW, DH, U => { U.t("S", DP.a.t); base(U); U.f("dir", 1); });
+    X.run(pAdv, bar.fb, DW, DH, U => { U.t("S", hat.t); base(U); U.f("dir", -1); });
+    DP.run(pMac, U => { U.t("S", DP.a.t); U.t("HAT", hat.t); U.t("BAR", bar.t); base(U); set(U); }); } };
+  const pShow = X.prog(HEAD + FN + `
+uniform sampler2D S; uniform sampler2D V; uniform vec2 view; uniform ivec2 size; out vec4 o;
+uniform float tick;
+const vec3 R0 = vec3(0.070, 0.095, 0.135), R1 = vec3(0.030, 0.030, 0.040), R2 = vec3(0.135, 0.085, 0.065), R3 = vec3(0.270, 0.170, 0.105), R4 = vec3(0.520, 0.365, 0.160), R5 = vec3(0.045, 0.040, 0.045);
+vec3 ramp(float t) { t = clamp(t, 0.0, 1.0) * 5.0; int i = int(floor(t)); float f = fract(t); f = f * f * (3.0 - 2.0 * f);
+  if (i == 0) return mix(R0, R1, f); if (i == 1) return mix(R1, R2, f); if (i == 2) return mix(R2, R3, f);
+  if (i == 3) return mix(R3, R4, f); if (i == 4) return mix(R4, R5, f); return R5; }
+float h3(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+vec3 shade(vec2 q) { vec2 px = 2.0 / vec2(size); float c = texture(S, q).r;
+  float cx = texture(S, q + vec2(px.x, 0.0)).r - texture(S, q - vec2(px.x, 0.0)).r, cy = texture(S, q + vec2(0.0, px.y)).r - texture(S, q - vec2(0.0, px.y)).r;
+  return ramp(c) * (1.0 + clamp(1.5 * dot(vec2(cx, cy), vec2(-0.6, 0.6)), -0.08, 0.08)); }
+vec2 vel(vec2 q) { return texture(V, q).yz; }
+void main() { vec2 q = gl_FragCoord.xy / view; vec2 e = (q - 0.5) * vec2(view.x / view.y, 1.0); float rr = dot(e, e);
+  vec2 ca = (q - 0.5) * 0.0035 * rr;
+  vec3 col = vec3(shade(q + ca).r, shade(q).g, shade(q - ca).b);
+  col = col * col * (3.0 - 2.0 * col) * 0.35 + col * 0.75;
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col += vec3(0.000, 0.006, 0.012) * (1.0 - smoothstep(0.0, 0.25, lum));
+  col *= mix(1.0, 0.30, smoothstep(0.15, 1.05, rr));
+  float fr = floor(tick / 2.5); vec2 gp = floor(gl_FragCoord.xy / 1.5);
+  float n1 = h3(vec3(gp, fr)) + h3(vec3(gp + 17.0, fr + 3.0)) - 1.0;
+  vec3 nc = vec3(h3(vec3(gp + 31.0, fr)), h3(vec3(gp + 47.0, fr)), h3(vec3(gp + 59.0, fr))) - 0.5;
+  col += (0.030 + 0.050 * sqrt(max(lum, 0.0))) * (n1 * 0.8 + nc * 0.35);
+  col = max(col, 0.0);
+  o = vec4(col, 1.0); }`);
+  const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const st = new Float32Array(16), sc = [0, 0, 0, 0];
+  let step = 0, ev = 0, next = 0, storms = [], en = 0, e0 = 0, ex = 0, ey = 0; const log = [], eye = [0, 0, 0, 0], ELIFE = 14000;
+  function seed() { const d = new Float32Array(DW * DH * 4);
+    for (let y = 0; y < DH; y++) { const yy = (y + 0.5) / DH; const v = 0.5 + 0.36 * Math.sin(3.14159265 * 7 * yy + 1.5708) + 0.14 * Math.sin(3.14159265 * 17 * yy + 2.0);
+      for (let x = 0; x < DW; x++) d[(y * DW + x) * 4] = v; }
+    dye.load(d); }
+  function reset() { lbm.init(); step = 0; ev = 0; next = 500; storms = []; en = 0; e0 = 2500; log.length = 0; seed(); }
+  reset();
+  let fc = 0;
+  return { reset, lbm, log, frame(n) { fc++;
+    for (let s = 0; s < n; s++, step++) {
+      if (step >= next) { ev++; next = step + 6500 + 5000 * ((ev * PHI) % 1);
+        const edge = ((Math.floor(((ev * PLASTIC) % 1) * 6) + 1) / 7) * H, x0 = ((ev * PHI) % 1) * W, cnt = 3 + (ev % 2);
+        storms = []; for (let k = 0; k < cnt; k++) { const h = (ev * 7 + k * 3) * 0.5698402910 % 1;
+          storms.push({ x: (x0 + k * (55 + 30 * h)) % W, y: edge + (h - 0.5) * 34, r: 11 + 12 * h, s: (k % 2 ? -1 : 1) * (0.7 + 0.6 * h), c: (k * 0.37 + ev * 0.21) % 1 > 0.5 ? 0.5 : (k % 2 ? 0.0 : 0.72), t0: step + k * 260, dur: 1500 + 900 * h }); }
+        log.push("storm@" + step); }
+      if (step === e0) { en++; ey = ([1, 5, 3][en % 3] / 7) * H; ex = ((en * PLASTIC + 0.3) % 1) * W; log.push("eye@" + step); }
+      { const dt = step - e0; if (dt >= 0 && dt <= ELIFE) { eye[0] = (ex - 0.004 * dt + 4 * W) % W; eye[1] = ey; eye[2] = 20; eye[3] = ss(0, 1500, dt) * ss(ELIFE, ELIFE - 2500, dt); }
+        else { eye[3] = 0; if (dt > ELIFE) e0 = step + 9000 + Math.floor(8000 * ((en * PHI) % 1)); } }
+      st.fill(0);
+      storms.forEach((q, i) => { const dt = step - q.t0; if (dt < 0 || dt > q.dur) return;
+        const e = ss(0, 250, dt) * ss(q.dur, q.dur - 500, dt); st[i * 4] = q.x; st[i * 4 + 1] = q.y; st[i * 4 + 2] = q.r; st[i * 4 + 3] = q.s * e; sc[i] = q.c; });
+      lbm.step(U => { U.v4("st", st); U.f("u0", JOVE.u0); U.f("relax", JOVE.relax); U.f("kick", JOVE.kick); U.f("beta", JOVE.beta); U.f("eye", ...eye); });
+      dye.step(lbm.vel, U => { U.v4("st", st); U.f("sc", ...sc); U.f("back", JOVE.back); U.f("eye", ...eye); });
+    }
+    X.run(pShow, null, gl.canvas.width, gl.canvas.height, U => { U.t("S", dye.t); U.t("V", lbm.vel); U.f("view", gl.canvas.width, gl.canvas.height); U.i("size", DW, DH); U.f("tick", fc); });
+  } };
+}
+
+const SKETCHES = [["k1", X => sketchJove(X), 6]];
+const live = []; window.live = live;
+window.dbg = () => live.map(st => ({ name: st.name, frames: st.frames, ...(st.sk.lbm ? st.sk.lbm.stats() : {}) }));
+for (const [name, make, steps] of SKETCHES) {
+  const canvas = document.getElementById("c-" + name), card = canvas.closest(".card");
+  try {
+    const X = mkX(canvas), sk = make(X), st = { name, sk, steps, mult: 1, frames: 0 };
+    live.push(st);
+    const bs = card.querySelector("[data-speed]"), br = card.querySelector("[data-restart]");
+    bs.addEventListener("click", e => { e.stopPropagation(); st.mult = st.mult === 1 ? 6 : 1; bs.classList.toggle("on", st.mult !== 1); });
+    br.addEventListener("click", e => { e.stopPropagation(); sk.reset(); });
+  } catch (err) {
+    const div = document.createElement("div"); div.className = "err"; div.textContent = String(err.message || err).slice(0, 1500); canvas.replaceWith(div);
+    console.error(name, err);
+  }
+}
+function tick() {
+  for (const st of live) {
+    try { st.sk.frame(st.steps * st.mult); st.frames++;
+      if (st.sk.lbm && st.frames % 120 === 0 && st.sk.lbm.broken()) st.sk.reset();
+    } catch (err) { console.error(err); }
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
