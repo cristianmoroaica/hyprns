@@ -14,14 +14,17 @@ ifneq ($(shell $(CXX) --version 2>/dev/null | grep -c 'Free Software Foundation'
 	CXXFLAGS += --no-gnu-unique
 endif
 
+# BUILD and TARGET can be set on the command line to build outside the source tree
+# (the Omarchy loader does: a write inside an Omarchy plugin folder reloads the shell).
+BUILD = build
 TARGET = hyprns.so
 SOURCES = $(shell find src -name '*.cpp')
-OBJ = $(patsubst src/%.cpp,build/%.o,$(SOURCES))
+OBJ = $(patsubst src/%.cpp,$(BUILD)/%.o,$(SOURCES))
 HEADERS = $(shell find src -name '*.hpp')
 
 all: $(TARGET)
 
-build/%.o: src/%.cpp $(HEADERS)
+$(BUILD)/%.o: src/%.cpp $(HEADERS)
 	@mkdir -p $(dir $@)
 	@echo "[$(CXX)] $<"
 	@$(CXX) -c $(CXXFLAGS) $(INCLUDES) $< -o $@
@@ -79,6 +82,6 @@ test: $(UNIT)
 	@./$(UNIT)
 
 clean:
-	rm -rf build $(TARGET)
+	rm -rf $(BUILD) $(TARGET)
 
 .PHONY: all bench test clean

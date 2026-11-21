@@ -8,9 +8,9 @@ render (no extra surface, no client program). It has four looks:
 
 | | |
 |---|---|
-| ![pattern](reference/stills/pattern-plugin.png) | ![embers](reference/stills/embers-plugin.png) |
+| ![pattern](docs/pattern.webp) | ![embers](docs/embers.webp) |
 | `pattern`: a reaction–diffusion web stirred by the fluid, espresso to brass | `embers`: coals seen from above, a coral glow in creeping cracks |
-| ![marble](reference/stills/marble-plugin.png) | ![jupiter](reference/stills/jupiter-plugin.png) |
+| ![marble](docs/marble.webp) | ![jupiter](docs/jupiter.webp) |
 | `marble`: black marble leaned on by the fluid, veins that come and go | `jupiter`: a dark banded planet, storm outbreaks, a recurring eye, camera grain |
 
 Each look never repeats: the fluid is chaotic, and every look's events (storms, veins,
@@ -52,6 +52,48 @@ lowest level and `status` says `over budget`. To lower the load:
   picture first, after loading, a look switch, a reset or a monitor change.
 
 The tables under "Cost" give each look's cost at each quality.
+
+## Install on Omarchy
+
+On Omarchy (the Quattro shell) hyprns installs as a shell plugin. The shell plugin is
+a small service (`omarchy/Service.qml`) that builds `hyprns.so` in `~/.cache/hyprns`
+and loads it into Hyprland. It does not edit any of your config files.
+
+```sh
+omarchy plugin add https://github.com/cristianmoroaica/hyprns --enable
+```
+
+The first start compiles the plugin with all cores at low priority (about 10 seconds
+on a 16-core desktop CPU, 80 seconds on one core). A notification, "Installing
+hyprns", stays up while it builds and turns into "hyprns is running" when the
+wallpaper switches over. After `omarchy plugin update`, or when Hyprland refuses the old
+build after a Hyprland update, it rebuilds the same way ("Updating hyprns"). A
+failed build or load ends with a notification that says why; the log is in
+`~/.local/state/hyprns/omarchy-load.log`. At later logins it loads silently.
+
+What you see: `omarchy plugin add` makes the shell reload its plugins once, as it does
+for every plugin, so the bar redraws once. The wallpaper switches to the live one once,
+when the plugin loads; Hyprland reloads its config by itself at that moment. The build
+writes nothing into the plugin folder (the shell reloads every plugin on each file
+written there), and restarting the shell does not unload or reload hyprns.
+
+Settings go in your Hyprland config as described under "Config"; Hyprland applies them
+when the plugin loads.
+
+Requirements are the same as for building by hand (see "Requirements"): the Hyprland
+headers, pixman, libdrm, GCC with C++23 and make. On Arch: `sudo pacman -S --needed
+base-devel pixman libdrm` (the headers come with the `hyprland` package).
+
+Remove it:
+
+```sh
+omarchy plugin remove io.github.cristianmoroaica.hyprns
+```
+
+Disabling or removing the shell plugin unloads hyprns from Hyprland a few seconds later,
+and Hyprland's own wallpaper (or the shell's background) shows again. Do not also load
+hyprns another way (hyprpm, `hl.plugin.load`): the service leaves an hyprns that is
+already loaded alone.
 
 ## Build and load
 
